@@ -63,7 +63,7 @@
 
 <script lang="ts">
 import { calc } from "src/assets/decompiler";
-import { ref, defineComponent, watchEffect, watch, computed, shallowRef } from "vue";
+import { ref, defineComponent, watchEffect, watch, computed, shallowRef, reactive, unref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useUrlRef } from "../url-ref";
 import { BinaryNumber } from "../math/binary-number";
@@ -82,15 +82,17 @@ export default defineComponent({
 
     const operation = urlRef("operation", "");
     
-    let base: number;
-    let mantissa: number;
-    let min_exp: number;
-    let max_exp: number;
-    let denormalized: boolean;
+    const format = reactive({
+      base: 0,
+      mantissa: 0,
+      min_exp: 0,
+      max_exp: 0,
+      denormalized: false,
+      sign_bit_length: 0,
+      exponent_length: 0,
+      mantissa_length: 0,
+    });
 
-    let sign_bit_length: number;
-    let exponent_length: number;
-    let mantissa_length: number;
 
     let a_sign: number;
     let a_exponent: number;
@@ -100,7 +102,7 @@ export default defineComponent({
     let b_exponent: number;
     let b_mantissa: number;
 
-    function stringToBinaryNumber(value: string): BinaryNumber | null {
+  function stringToBinaryNumber(value: string): BinaryNumber | null {
     const binaryNumberRegex = /^([+-])?([0-1]+)([.,]([0-1]+))?$/;
 
     const matchResults = (value ?? "").match(binaryNumberRegex);
@@ -114,6 +116,20 @@ export default defineComponent({
       fractionalPart?.length ?? 0
     );
   }
+  
+  function binaryToString(value: BinaryNumber) {
+      const sign = unref(value).isNegative ? "-" : "+";
+      const beforeDecimal = unref(value)
+        .getValueBeforeDecimal()
+        .map((v) => (v ? "1" : "0"))
+        .join("");
+      const afterDecimal = unref(value)
+        .getValueAfterDecimal()
+        .map((v) => (v ? "1" : "0"))
+        .join("");
+      return sign + beforeDecimal + (afterDecimal !== undefined && afterDecimal.length > 0 ? `.${afterDecimal}` : "");
+    }
+
 
 
     function remove_space(){
@@ -124,7 +140,7 @@ export default defineComponent({
     //TODO: Make sure a_interpreation and b_interpretation are run everytime a radiobutton gets pressed
     function calculate_output(){
       let message = "";
-      let result = 0;
+      let result;
       if (numberA.value.length == 16 && numberB.value.length == 16){
         if (operation.value == "0"){
           message = "- Transform number A and B in scientific notation: \n\Number A: " + a_sign + " * "+a_mantissa + " * 2 ^"+a_exponent+"\n\
@@ -146,31 +162,81 @@ export default defineComponent({
             message += ("\nDivide mantissa of A by 10^"+difference+":\n"+a_mantissa)
           }
 
-          message += "\n\n- Add mantissa together: "
+          message += ("\n\n- Add mantissa together:\n  "+ a_mantissa+"\n+ "+b_mantissa);
 
-          console.log(numberA.value.length + "  " + numberB.value.length);
+          let numberAbin = stringToBinaryNumber(a_mantissa.toString());
+          let numberBbin = stringToBinaryNumber(b_mantissa.toString());
+
+          if (numberAbin && numberBbin){
+            result = numberAbin.add(numberBbin);
+          }
+
+          if (result){
+            message += ("\n= "+binaryToString(result));
+          }
+          
+          let diff = 0;
+          if (result){
+            diff = result?.value.length-result?.decimalPoint;
+          }
+          
+          if (result && diff){
+            message += ("\n\n- Integer part higher or equal to 10. -> Normalize\n")
+            result = result.multiplyByPowerOfTwo(-1);
+          }
+          
+          let total_exponent = a_exponent;
+          if (result){
+            total_exponent += (diff-1);
+            message += (binaryToString(result) + " * 10^"+(diff-1)+"\nNew exponent: "+total_exponent);
+          }
+
+          total_exponent += format.max_exp;
+          message += ("\n\n-Convert exponent back to binary (with bias): \n"+total_exponent+" in decimal")
+          
+          let final_exponent = total_exponent.toString(2);
+          final_exponent = final_exponent.padStart(format.exponent_length, "0");
+          message += ("\n"+final_exponent+" in binary")
+
+          message += ("\n\n-Check if mantissa is negative to choose sign bit: ")
+          console.log(result); //TODO: Fix for sum on negative numbers
+          let sign_bit_new = 0;
+          if (result && result.isNegative)
+          {
+            sign_bit_new = 1;
+          }
+          message += (sign_bit_new+"\n\nPrepare mantissa to fit format\n\nCombine Sign Bit, Exponent and Mantissa (Fill end with zeroes).");
+
+          if (result){
+            let final_mantisssa = binaryToString(result).substring(3);
+            let final_IEEE = ""+sign_bit_new + final_exponent+final_mantisssa;
+            final_IEEE = final_IEEE.padEnd(parseInt(bitNumber.value),"0").substring(0,parseInt(bitNumber.value));
+            message += ("\n\nFinal Result : "+final_IEEE)
+          }
+
         }
-        return message + " \n " ;result;
+        return message + " \n " ;
       }
       else{
         return "Number A and B need to be " + bitNumber.value + " bits long."
       }
+
       
     }
 
     const format_output = computed(()=>{
-      base = parseInt(ieeeFormat.value.split(",")[0]);
-      mantissa = parseInt(ieeeFormat.value.split(",")[1]);
-      min_exp = parseInt(ieeeFormat.value.split(",")[2]);
-      max_exp = parseInt(ieeeFormat.value.split(",")[3]);
-      denormalized = (ieeeFormat.value.split(",")[4] === 'true');
+      format.base = parseInt(ieeeFormat.value.split(",")[0]);
+      format.mantissa = parseInt(ieeeFormat.value.split(",")[1]);
+      format.min_exp = parseInt(ieeeFormat.value.split(",")[2]);
+      format.max_exp = parseInt(ieeeFormat.value.split(",")[3]);
+      format.denormalized = (ieeeFormat.value.split(",")[4] === 'true');
 
-      sign_bit_length = 1;
-      exponent_length = parseInt(bitNumber.value) - mantissa;
-      mantissa_length = mantissa - 1;
+      format.sign_bit_length = 1;
+      format.exponent_length = parseInt(bitNumber.value) - format.mantissa;
+      format.mantissa_length = format.mantissa - 1;
 
-      return "Base: "+base+" | Mantissa: "+mantissa+" | Minimum exponent: "+min_exp+" | Maximum exponent: "+max_exp+" | Denormalized: "+denormalized + " \n\n \
-      Sign Bit: 1 | Exponent length: "+ exponent_length + " | Mantissa Length: "+mantissa_length;
+      return "Base: "+format.base+" | Mantissa: "+format.mantissa+" | Minimum exponent: "+format.min_exp+" | Maximum exponent: "+format.max_exp+" | Denormalized: "+format.denormalized + " \n\n \
+      Sign Bit: 1 | Exponent length: "+ format.exponent_length + " | Mantissa Length: "+format.mantissa_length;
 
     });
 
@@ -178,10 +244,10 @@ export default defineComponent({
     const a_interpretation = computed (() => {
         console.log(operation.value);
         remove_space();
-        let a_exp = numberA.value.substring(1,1+exponent_length);
-        let a_mant = parseInt(numberA.value.substring(1+exponent_length, 1+exponent_length+mantissa_length));
+        let a_exp = numberA.value.substring(1,1+format.exponent_length);
+        let a_mant = parseInt(numberA.value.substring(1+format.exponent_length, 1+format.exponent_length+format.mantissa_length));
 
-        if (a_exp == "1".repeat(exponent_length) && a_mant == 0){
+        if (a_exp == "1".repeat(format.exponent_length) && a_mant == 0){
           if (parseInt(numberA.value.charAt(0)) == 1){
             return "Only 1 in exponent, Only 0 in mantissa and Bit Sign = 1: Minus Infinity ";
           }
@@ -190,23 +256,23 @@ export default defineComponent({
           }
           
         }
-        else if (a_exp == "1".repeat(exponent_length) && a_mant > 0){
+        else if (a_exp == "1".repeat(format.exponent_length) && a_mant > 0){
           return "NaN (0/0, Negative sqrt)";
         }
-        else if (a_exp == "0".repeat(exponent_length) && a_mant == 0 && !denormalized){
+        else if (a_exp == "0".repeat(format.exponent_length) && a_mant == 0 && !format.denormalized){
           return "Number = 0";
         }
-        else if (a_exp == "0".repeat(exponent_length) && denormalized){
+        else if (a_exp == "0".repeat(format.exponent_length) && format.denormalized){
           a_sign = Math.pow(-1,parseInt(numberA.value.charAt(0)));
-          a_exponent = min_exp;
-          a_mantissa = parseFloat("0."+numberA.value.substring(1+exponent_length, 1+exponent_length+mantissa_length));
+          a_exponent = format.min_exp;
+          a_mantissa = parseFloat("0."+numberA.value.substring(1+format.exponent_length, 1+format.exponent_length+format.mantissa_length));
 
           return "Denormalized number \nSign Bit: " + a_sign + " | Exponent: " + a_exponent + " | Mantissa: " + a_mantissa;
         }
         else{
           a_sign = Math.pow(-1,parseInt(numberA.value.charAt(0)));
-          a_exponent = parseInt(numberA.value.substring(1,1+exponent_length),2) - max_exp;
-          a_mantissa = parseFloat("1."+numberA.value.substring(1+exponent_length, 1+exponent_length+mantissa_length));
+          a_exponent = parseInt(numberA.value.substring(1,1+format.exponent_length),2) - format.max_exp;
+          a_mantissa = parseFloat("1."+numberA.value.substring(1+format.exponent_length, 1+format.exponent_length+format.mantissa_length));
           return "Sign Bit: " + a_sign + " | Exponent: " + a_exponent + " | Mantissa: " + a_mantissa;
         }
 
@@ -215,10 +281,10 @@ export default defineComponent({
     const b_interpretation = computed (() => {
       console.log(operation.value);
       remove_space();
-      let b_exp = numberB.value.substring(1,1+exponent_length);
-      let b_mant = parseInt(numberB.value.substring(1+exponent_length, 1+exponent_length+mantissa_length));
+      let b_exp = numberB.value.substring(1,1+format.exponent_length);
+      let b_mant = parseInt(numberB.value.substring(1+format.exponent_length, 1+format.exponent_length+format.mantissa_length));
 
-      if (b_exp == "1".repeat(exponent_length) && b_mant == 0){
+      if (b_exp == "1".repeat(format.exponent_length) && b_mant == 0){
         if (parseInt(numberB.value.charAt(0)) == 1){
           return "Only 1 in exponent, Only 0 in mantissa and Bit Sign = 1: Minus Infinity ";
         }
@@ -227,23 +293,23 @@ export default defineComponent({
         }
         
       }
-      else if (b_exp == "1".repeat(exponent_length) && b_mant > 0){
+      else if (b_exp == "1".repeat(format.exponent_length) && b_mant > 0){
         return "NaN (0/0, Negative sqrt)";
       }
-      else if (b_exp == "0".repeat(exponent_length) && b_mant == 0 && !denormalized){
+      else if (b_exp == "0".repeat(format.exponent_length) && b_mant == 0 && !format.denormalized){
         return "Number = 0";
       }
-      else if (b_exp == "0".repeat(exponent_length) && denormalized){
+      else if (b_exp == "0".repeat(format.exponent_length) && format.denormalized){
         b_sign = Math.pow(-1,parseInt(numberB.value.charAt(0)));
-        b_exponent = min_exp;
-        b_mantissa = parseFloat("0."+numberB.value.substring(1+exponent_length, 1+exponent_length+mantissa_length));
+        b_exponent = format.min_exp;
+        b_mantissa = parseFloat("0."+numberB.value.substring(1+format.exponent_length, 1+format.exponent_length+format.mantissa_length));
 
         return "Denormalized number \nSign Bit: " + b_sign + " | Exponent: " + b_exponent + " | Mantissa: " + b_mantissa;
       }
       else{
         b_sign = Math.pow(-1,parseInt(numberB.value.charAt(0)));
-        b_exponent = parseInt(numberB.value.substring(1,1+exponent_length),2) - max_exp;
-        b_mantissa = parseFloat("1."+numberB.value.substring(1+exponent_length, 1+exponent_length+mantissa_length));
+        b_exponent = parseInt(numberB.value.substring(1,1+format.exponent_length),2) - format.max_exp;
+        b_mantissa = parseFloat("1."+numberB.value.substring(1+format.exponent_length, 1+format.exponent_length+format.mantissa_length));
         return "Sign Bit: " + b_sign + " | Exponent: " + b_exponent + " | Mantissa: " + b_mantissa;
       }
     });
